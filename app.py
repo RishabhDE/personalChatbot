@@ -1,14 +1,11 @@
 
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.docstore.document import Document
 from langchain.chains.question_answering import load_qa_chain
 from langchain_google_genai import GoogleGenerativeAI
-import os
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 import google.generativeai as genai
@@ -18,26 +15,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Helper Functions for Data Extraction ---
-
-def get_text_from_url(url):
-    """Scrapes text content from a given URL. Prone to failure on modern sites."""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for script_or_style in soup(['script', 'style']):
-            script_or_style.extract()
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-        if not text:
-            st.warning(f"Warning: No text was scraped from {url}. The site might be blocking scrapers.")
-        return text
-    except requests.RequestException as e:
-        st.error(f"Error fetching URL {url}: {e}. This is common for sites like LinkedIn.")
-        return ""
 
 def get_text_from_pdf(pdf_file):
     """Extracts text from an uploaded PDF file."""
@@ -97,16 +74,18 @@ def get_vector_store(text_chunks):
         return None
 
 def get_conversational_chain():
-    """Creates and configures the QA chain with a dynamic prompt."""
+    """Creates and configures the QA chain with a dynamic and more natural prompt."""
     person_name = st.session_state.get("person_name", "the user")
     
-    # Generic prompt template that uses the extracted name
+    # *** CHANGE: Updated prompt for more direct and natural responses ***
     prompt_template_str = f"""
-    You are "{person_name}'s AI", a friendly and professional chatbot assistant.
-    Your goal is to answer questions about {person_name} based ONLY on the context provided.
+    You are "{person_name}'s AI", a friendly and professional chatbot assistant that has deep knowledge about {person_name}.
+    Your goal is to answer questions about {person_name} directly and naturally, using the context provided as your source of truth.
+    Do not mention that you are basing your answer on the provided text. Act as if you know this information innately.
 
-    Answer the question as accurately as possible using the provided text.
-    If the answer is not in the context, politely say "I'm sorry, I don't have that information about {person_name} in my knowledge base."
+    For example, if the user asks "What is their experience?", you should respond "{person_name} has 5 years of experience..." instead of "Based on the text, they have 5 years of experience...".
+
+    If the answer is not in the context, politely say "I'm sorry, I don't have specific information about that regarding {person_name}."
     Keep your answers concise and human-like.
 
     Context:
@@ -127,57 +106,28 @@ def get_conversational_chain():
     )
     return chain
 
-# *** NEW: Function to extract the person's name from the text ***
 def get_person_name(text_chunks):
     """Extracts the subject's name from the document chunks using the LLM."""
     if not text_chunks:
         return "ResumAI"
 
-    # Create a small, targeted vector store for name extraction
     try:
         temp_vector_store = get_vector_store(text_chunks)
         if temp_vector_store is None:
-             return "ResumAI" # Default name
+             return "ResumAI" 
         
-        # Query for the name
         name_query = "What is the full name of the person these documents are about? Respond with only the name."
         docs = temp_vector_store.similarity_search(name_query, k=1)
         
-        # Use a simple LLM call to get the name
         model = GoogleGenerativeAI(model="gemini-1.5-flash")
         chain = load_qa_chain(llm=model, chain_type="stuff")
         response = chain.invoke({"input_documents": docs, "question": name_query})
         
-        # Clean up the name
-        name = response.get("output_text", "ResumAI").strip()
+        name = response.get("output_text", "ResumAI").strip().split()[0] # Take the first name for brevity
         return name
     except Exception as e:
         st.warning(f"Could not automatically determine the name. Using default. Error: {e}")
-        return "ResumAI" # Default name
-
-
-def handle_chat_input(user_question):
-    """Handles user input, gets response, and updates chat history."""
-    if "vector_store" not in st.session_state or st.session_state.vector_store is None:
-        st.warning("The knowledge base isn't processed yet. Please click 'Process' first.")
-        return
-
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": user_question})
-
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                docs = st.session_state.vector_store.similarity_search(user_question, k=3)
-                chain = get_conversational_chain()
-                response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
-                response_text = response["output_text"]
-                st.write(response_text)
-                st.session_state.messages.append({"role": "assistant", "content": response_text})
-            except Exception as e:
-                error_message = f"An error occurred: {e}"
-                st.error(error_message)
-                st.session_state.messages.append({"role": "assistant", "content": error_message})
+        return "ResumAI"
 
 # --- Streamlit UI ---
 
@@ -190,45 +140,42 @@ def main():
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "person_name" not in st.session_state:
-        st.session_state.person_name = "Your" # Default
+        st.session_state.person_name = "Your" 
     if "prompt_template" not in st.session_state:
         from langchain.prompts import PromptTemplate
         st.session_state.prompt_template = PromptTemplate
 
-    st.header(f"Chat with {st.session_state.person_name}'s AI 🤖")
-
-    # Display chat messages from history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Sidebar configuration
+    # Sidebar for configuration
     with st.sidebar:
         st.subheader("Knowledge Base Configuration")
-
-        if "GOOGLE_API_KEY" in st.secrets:
-            st.success("✅ Google API Key found.")
-            genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-        else:
-            st.error("❌ Google API Key not found. Go to Settings > Secrets to add it.")
-
-        linkedin_username = st.text_input("LinkedIn Username (Optional)")
-        github_username = st.text_input("GitHub Username (Optional)")
         
-        st.markdown("Upload documents (PDF, DOCX, TXT) to build the knowledge base.")
+        # *** CHANGE: Removed username inputs and added clearer instructions ***
+        st.markdown(
+            """
+            **How to use this app:**
+            1.  **Provide Documents:** Upload a resume, cover letter, or any other documents about a person.
+            2.  **For Best Results:** For profiles like LinkedIn, go to the profile, click `More` > `Save to PDF`, and upload that file.
+            3.  **Process:** Click the "Process Documents" button.
+            """
+        )
+
         uploaded_files = st.file_uploader(
-            "Upload your Resume and other info",
+            "Upload your documents (PDF, DOCX, TXT)",
             type=['pdf', 'docx', 'txt'],
-            accept_multiple_files=True
+            accept_multiple_files=True,
+            label_visibility="collapsed"
         )
         
         if st.button("Process Documents"):
             if "GOOGLE_API_KEY" not in st.secrets:
-                st.error("Cannot process without a Google API Key in Secrets.")
+                st.error("Google API Key not found. Go to Settings > Secrets to add it.")
             elif not uploaded_files:
                 st.warning("Please upload at least one document.")
             else:
                 with st.spinner("Processing documents... This might take a moment."):
+                    # Configure API key
+                    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+
                     raw_text = ""
                     for file in uploaded_files:
                         if file.name.endswith(".pdf"):
@@ -238,28 +185,47 @@ def main():
                         elif file.name.endswith(".txt"):
                             raw_text += get_text_from_txt(file)
                     
-                    linkedin_url = f"https://www.linkedin.com/in/{linkedin_username}/" if linkedin_username else ""
-                    github_url = f"https://github.com/{github_username}" if github_username else ""
-
-                    if linkedin_url:
-                        raw_text += get_text_from_url(linkedin_url)
-                    if github_url:
-                        raw_text += get_text_from_url(github_url)
-
                     text_chunks = get_text_chunks(raw_text)
                     st.session_state.vector_store = get_vector_store(text_chunks)
                     
                     if st.session_state.vector_store:
-                        # Extract the name and update the session
                         st.session_state.person_name = get_person_name(text_chunks)
-                        st.session_state.messages = [] # Clear previous chat
-                        st.success(f"Knowledge base ready for {st.session_state.person_name}!")
+                        st.session_state.messages = [] 
+                        st.success(f"Ready to chat about {st.session_state.person_name}!")
                         st.rerun()
 
-    # Chat input
-    if prompt := st.chat_input("Ask a question about the provided documents..."):
-        handle_chat_input(prompt)
+    # Main chat interface
+    st.header(f"Chat with {st.session_state.person_name}'s AI 🤖")
 
+    # Display chat messages from history
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Accept user input
+    if prompt := st.chat_input("Ask a question..."):
+        # Add user message to session state and display it
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Get and display assistant response
+        if st.session_state.vector_store is None:
+            st.warning("Please process some documents first.")
+        else:
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        docs = st.session_state.vector_store.similarity_search(prompt, k=3)
+                        chain = get_conversational_chain()
+                        response = chain({"input_documents": docs, "question": prompt}, return_only_outputs=True)
+                        response_text = response["output_text"]
+                        st.markdown(response_text)
+                        st.session_state.messages.append({"role": "assistant", "content": response_text})
+                    except Exception as e:
+                        error_message = f"An error occurred: {e}"
+                        st.error(error_message)
+                        st.session_state.messages.append({"role": "assistant", "content": error_message})
 
 if __name__ == '__main__':
     main()
