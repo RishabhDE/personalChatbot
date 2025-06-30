@@ -1,5 +1,7 @@
 
 import streamlit as st
+import requests
+from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -15,6 +17,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Helper Functions for Data Extraction ---
+
+def get_text_from_url(url):
+    """Scrapes text content from a given URL. Prone to failure on modern sites."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for script_or_style in soup(['script', 'style']):
+            script_or_style.extract()
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        if not text:
+            st.warning(f"Warning: No text was scraped from {url}. The site might be blocking scrapers.")
+        return text
+    except requests.RequestException as e:
+        st.error(f"Error fetching URL {url}: {e}. This is common for sites like LinkedIn.")
+        return ""
 
 def get_text_from_pdf(pdf_file):
     """Extracts text from an uploaded PDF file."""
@@ -77,16 +99,16 @@ def get_conversational_chain():
     """Creates and configures the QA chain with a dynamic and more natural prompt."""
     person_name = st.session_state.get("person_name", "the user")
     
-    # *** CHANGE: Updated prompt for more direct and natural responses ***
+    # *** CHANGE: Updated prompt for more direct and comprehensive responses ***
     prompt_template_str = f"""
     You are "{person_name}'s AI", a friendly and professional chatbot assistant that has deep knowledge about {person_name}.
-    Your goal is to answer questions about {person_name} directly and naturally, using the context provided as your source of truth.
+    Your goal is to answer questions about {person_name} comprehensively and naturally, using the context provided as your source of truth.
     Do not mention that you are basing your answer on the provided text. Act as if you know this information innately.
 
-    For example, if the user asks "What is their experience?", you should respond "{person_name} has 5 years of experience..." instead of "Based on the text, they have 5 years of experience...".
+    For example, if the user asks "What is their experience?", you should respond with a full sentence like "{person_name} has 5 years of experience as an Azure Data Engineer, where they specialized in..." rather than just "5 years".
 
     If the answer is not in the context, politely say "I'm sorry, I don't have specific information about that regarding {person_name}."
-    Keep your answers concise and human-like.
+    Keep your answers helpful and human-like.
 
     Context:
     {{context}}
@@ -107,7 +129,7 @@ def get_conversational_chain():
     return chain
 
 def get_person_name(text_chunks):
-    """Extracts the subject's name from the document chunks using the LLM."""
+    """Extracts the subject's full name from the document chunks using the LLM."""
     if not text_chunks:
         return "ResumAI"
 
@@ -116,14 +138,15 @@ def get_person_name(text_chunks):
         if temp_vector_store is None:
              return "ResumAI" 
         
-        name_query = "What is the full name of the person these documents are about? Respond with only the name."
+        name_query = "What is the full name of the person these documents are about? Respond with only the full name."
         docs = temp_vector_store.similarity_search(name_query, k=1)
         
         model = GoogleGenerativeAI(model="gemini-1.5-flash")
         chain = load_qa_chain(llm=model, chain_type="stuff")
         response = chain.invoke({"input_documents": docs, "question": name_query})
         
-        name = response.get("output_text", "ResumAI").strip().split()[0] # Take the first name for brevity
+        # *** CHANGE: Use the full name instead of just the first name ***
+        name = response.get("output_text", "ResumAI").strip()
         return name
     except Exception as e:
         st.warning(f"Could not automatically determine the name. Using default. Error: {e}")
@@ -149,15 +172,18 @@ def main():
     with st.sidebar:
         st.subheader("Knowledge Base Configuration")
         
-        # *** CHANGE: Removed username inputs and added clearer instructions ***
         st.markdown(
             """
             **How to use this app:**
             1.  **Provide Documents:** Upload a resume, cover letter, or any other documents about a person.
             2.  **For Best Results:** For profiles like LinkedIn, go to the profile, click `More` > `Save to PDF`, and upload that file.
-            3.  **Process:** Click the "Process Documents" button.
+            3.  **(Optional) Add GitHub:** Enter a GitHub username to include their public repositories in the knowledge base.
+            4.  **Process:** Click the "Process Documents" button.
             """
         )
+        
+        # *** CHANGE: Added GitHub username input back ***
+        github_username = st.text_input("GitHub Username (Optional)")
 
         uploaded_files = st.file_uploader(
             "Upload your documents (PDF, DOCX, TXT)",
@@ -173,7 +199,6 @@ def main():
                 st.warning("Please upload at least one document.")
             else:
                 with st.spinner("Processing documents... This might take a moment."):
-                    # Configure API key
                     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
                     raw_text = ""
@@ -184,6 +209,12 @@ def main():
                             raw_text += get_text_from_docx(file)
                         elif file.name.endswith(".txt"):
                             raw_text += get_text_from_txt(file)
+                    
+                    # *** CHANGE: Re-added GitHub scraping logic ***
+                    if github_username:
+                        github_url = f"https://github.com/{github_username}"
+                        st.info(f"Attempting to scrape GitHub...")
+                        raw_text += get_text_from_url(github_url)
                     
                     text_chunks = get_text_chunks(raw_text)
                     st.session_state.vector_store = get_vector_store(text_chunks)
@@ -204,7 +235,6 @@ def main():
 
     # Accept user input
     if prompt := st.chat_input("Ask a question..."):
-        # Add user message to session state and display it
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
