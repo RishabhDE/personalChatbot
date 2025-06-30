@@ -51,15 +51,21 @@ def get_text_from_sitemap(base_url):
         root = ET.fromstring(response.content)
         urls_to_scrape = [elem.text for elem in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc')]
         
+        if not urls_to_scrape:
+            st.warning("Sitemap found, but it was empty. Scraping the main page only.")
+            return get_text_from_url(base_url)
+
         st.info(f"Found {len(urls_to_scrape)} pages in sitemap. Scraping...")
         
-        with st.progress(0, text="Scraping website...") as progress_bar:
-            for i, url in enumerate(urls_to_scrape):
-                all_text += get_text_from_url(url) + "\n\n"
-                progress_bar.progress((i + 1) / len(urls_to_scrape))
+        # *** FIX: Replaced st.progress with a more robust st.empty() status update ***
+        status_text = st.empty()
+        for i, url in enumerate(urls_to_scrape):
+            status_text.info(f"Scraping page {i + 1}/{len(urls_to_scrape)}...")
+            all_text += get_text_from_url(url) + "\n\n"
+        
+        status_text.empty() # Clear the status message
         st.success("Sitemap processed successfully!")
 
-    # *** FIX: Corrected the exception handling block to be relevant to web scraping ***
     except (requests.exceptions.RequestException, ET.ParseError) as e:
         st.warning(f"Could not find or parse sitemap.xml (Reason: {e}). Falling back to scraping just the main page.")
         all_text = get_text_from_url(base_url)
