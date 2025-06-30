@@ -1,38 +1,11 @@
-# app.py
-# This is the main file for your Streamlit application.
-# It uses an environment variable for the API key, and UI inputs for usernames.
-# Now with support for .txt file uploads as a workaround for scraping issues.
-
-# First, update your 'requirements.txt' file with the following.
-#
-# streamlit
-# langchain
-# langchain_community
-# langchain-google-genai
-# google-generativeai
-# faiss-cpu
-# sentence-transformers
-# InstructorEmbedding
-# beautifulsoup4
-# pypdf
-# python-docx
-# python-dotenv
-#
-# Then, install these dependencies by running:
-# pip install -r requirements.txt
-#
-# Next, create a file named '.env' in the same directory.
-# This file will store your secrets. Add the following line to it,
-# replacing the placeholder with your actual data:
-#
-# GOOGLE_API_KEY="your_google_api_key_here"
 
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceInstructEmbeddings
+# *** CHANGE: Import the new, recommended class ***
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.docstore.document import Document
 from langchain.chains.question_answering import load_qa_chain
 from langchain_google_genai import GoogleGenerativeAI
@@ -89,7 +62,6 @@ def get_text_from_docx(docx_file):
         st.error(f"Error reading DOCX file: {e}")
         return ""
 
-# *** NEW: Function to read plain text files ***
 def get_text_from_txt(txt_file):
     """Reads text from an uploaded TXT file."""
     try:
@@ -116,14 +88,16 @@ def get_vector_store(text_chunks):
         st.warning("No text to process. Please provide data.")
         return None
     try:
-        # Using a powerful open-source embedding model. It requires the 'InstructorEmbedding' package.
-        embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-xl")
+        # *** CHANGE: Instantiate the new, stable HuggingFaceEmbeddings class ***
+        # This class correctly handles instructor models without the 'token' error.
+        embeddings = HuggingFaceEmbeddings(model_name="hkunlp/instructor-xl")
+        
         documents = [Document(page_content=chunk) for chunk in text_chunks]
         vector_store = FAISS.from_documents(documents, embedding=embeddings)
         return vector_store
     except Exception as e:
         st.error(f"Error creating vector store: {e}")
-        st.error("This can happen if you have installation issues. Try running 'pip install --force-reinstall InstructorEmbedding' in your terminal.")
+        st.error("This can happen if you have installation issues or package conflicts. Ensure your requirements.txt is up to date.")
         return None
 
 def get_conversational_chain():
@@ -158,12 +132,14 @@ def handle_user_input(user_question):
     if "vector_store" not in st.session_state or st.session_state.vector_store is None:
         st.warning("The knowledge base isn't processed yet. Please click 'Process' first.")
         return
-    if not os.getenv("GOOGLE_API_KEY"):
-        st.error("Google API Key is not configured. Please set it in your environment.")
+    # In Streamlit Cloud, st.secrets is used instead of os.getenv()
+    api_key = st.secrets.get("GOOGLE_API_KEY")
+    if not api_key:
+        st.error("Google API Key is not configured. Please set it in your app's Secrets.")
         return
         
     try:
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        genai.configure(api_key=api_key)
         docs = st.session_state.vector_store.similarity_search(user_question, k=3)
         chain = get_conversational_chain()
         response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
@@ -175,7 +151,7 @@ def handle_user_input(user_question):
 # --- Streamlit UI ---
 
 def main():
-    st.set_page_config(page_title="Rishabh's AI (Env Configured)", page_icon="⚙️")
+    st.set_page_config(page_title="Rishabh's AI (Cloud Ready)", page_icon="☁️")
 
     if "vector_store" not in st.session_state:
         st.session_state.vector_store = None
@@ -183,7 +159,7 @@ def main():
         from langchain.prompts import PromptTemplate
         st.session_state.prompt_template = PromptTemplate
 
-    st.header("Chat with Rishabh's AI ⚙️")
+    st.header("Chat with Rishabh's AI ☁️")
     st.write("Ask me anything about Rishabh's professional background, skills, or projects!")
 
     user_question = st.text_input("Your question:", key="user_question_input", placeholder="e.g., What's Rishabh's experience with PySpark?")
@@ -194,16 +170,16 @@ def main():
     with st.sidebar:
         st.subheader("Knowledge Base Configuration")
 
-        google_api_key = os.getenv("GOOGLE_API_KEY")
-        if google_api_key:
-            st.success("✅ Google API Key Loaded")
+        # In Streamlit Cloud, secrets are not exposed to the UI
+        # We just check if it exists.
+        if st.secrets.get("GOOGLE_API_KEY"):
+            st.success("✅ Google API Key found in Secrets.")
         else:
-            st.error("❌ Google API Key not found. Please set it in your .env file.")
+            st.error("❌ Google API Key not found. Go to Settings > Secrets to add it.")
 
         linkedin_username = st.text_input("LinkedIn Username", placeholder="e.g., your-linkedin-profile")
         github_username = st.text_input("GitHub Username", placeholder="e.g., your-github-handle")
 
-        # *** CHANGE: Added .txt to accepted file types ***
         st.markdown("For LinkedIn, it's best to 'Save to PDF' from your profile and upload it here.")
         uploaded_files = st.file_uploader(
             "Upload your Resume and other info (PDF, DOCX, TXT)",
@@ -212,13 +188,13 @@ def main():
         )
         
         if st.button("Process"):
-            if not google_api_key:
-                st.error("Cannot process without a Google API Key.")
+            api_key = st.secrets.get("GOOGLE_API_KEY")
+            if not api_key:
+                st.error("Cannot process without a Google API Key in Secrets.")
             else:
-                genai.configure(api_key=google_api_key)
+                genai.configure(api_key=api_key)
                 with st.spinner("Processing your data... This is the way."):
                     raw_text = ""
-                    # Process uploaded files
                     for file in uploaded_files:
                         if file.name.endswith(".pdf"):
                             raw_text += get_text_from_pdf(file)
@@ -227,7 +203,6 @@ def main():
                         elif file.name.endswith(".txt"):
                             raw_text += get_text_from_txt(file)
                     
-                    # Process URLs
                     linkedin_url = f"https://www.linkedin.com/in/{linkedin_username}/" if linkedin_username else ""
                     github_url = f"https://github.com/{github_username}" if github_username else ""
 

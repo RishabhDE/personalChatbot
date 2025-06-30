@@ -6,6 +6,7 @@ google-generativeai
 faiss-cpu
 sentence-transformers==2.7.0
 InstructorEmbedding
+langchain-huggingface
 beautifulsoup4
 pypdf
 python-docx
