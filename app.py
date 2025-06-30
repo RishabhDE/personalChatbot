@@ -36,7 +36,6 @@ def get_text_from_url(url):
         st.warning(f"Could not scrape {url}. Reason: {e}")
         return ""
 
-# *** NEW: Sitemap Scraping Logic ***
 def get_text_from_sitemap(base_url):
     """
     Attempts to find and scrape all URLs in a website's sitemap.
@@ -49,20 +48,20 @@ def get_text_from_sitemap(base_url):
         response = requests.get(sitemap_url, timeout=10)
         response.raise_for_status()
 
-        # Parse the XML sitemap
         root = ET.fromstring(response.content)
         urls_to_scrape = [elem.text for elem in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc')]
         
         st.info(f"Found {len(urls_to_scrape)} pages in sitemap. Scraping...")
         
-        with st.progress(0) as progress_bar:
+        with st.progress(0, text="Scraping website...") as progress_bar:
             for i, url in enumerate(urls_to_scrape):
                 all_text += get_text_from_url(url) + "\n\n"
                 progress_bar.progress((i + 1) / len(urls_to_scrape))
         st.success("Sitemap processed successfully!")
 
-    except (requests.RequestException, ET.ParseError) as e:
-        st.warning(f"Could not find or parse sitemap.xml (Reason: {e}). Falling back to scraping the main page.")
+    # *** FIX: Corrected the exception handling block to be relevant to web scraping ***
+    except (requests.exceptions.RequestException, ET.ParseError) as e:
+        st.warning(f"Could not find or parse sitemap.xml (Reason: {e}). Falling back to scraping just the main page.")
         all_text = get_text_from_url(base_url)
 
     return all_text
@@ -183,7 +182,6 @@ def main():
             """
         )
         
-        # *** CHANGE: Added Custom Website URL input ***
         custom_url = st.text_input("Personal Website URL (e.g., https://yourblog.com)")
         github_username = st.text_input("GitHub Username (Optional)")
 
@@ -204,17 +202,14 @@ def main():
                     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
                     raw_text = ""
-                    # Process uploaded files
                     for file in uploaded_files:
                         if file.name.endswith(".pdf"): raw_text += get_text_from_pdf(file)
                         elif file.name.endswith(".docx"): raw_text += get_text_from_docx(file)
                         elif file.name.endswith(".txt"): raw_text += get_text_from_txt(file)
                     
-                    # Process custom website URL with sitemap logic
                     if custom_url:
                         raw_text += get_text_from_sitemap(custom_url)
 
-                    # Process GitHub URL
                     if github_username:
                         github_url = f"https://github.com/{github_username}"
                         st.info(f"Attempting to scrape GitHub...")
@@ -229,7 +224,7 @@ def main():
                         st.success(f"Ready to chat about {st.session_state.person_name}!")
                         st.rerun()
 
-    st.header(f"Chat with {st.session_state.person_name}'s AI �")
+    st.header(f"Chat with {st.session_state.person_name}'s AI 🤖")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
