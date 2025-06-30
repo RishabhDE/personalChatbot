@@ -4,7 +4,6 @@ import requests
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-# *** CHANGE: Import the new, recommended class ***
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.docstore.document import Document
 from langchain.chains.question_answering import load_qa_chain
@@ -15,7 +14,7 @@ from docx import Document as DocxDocument
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-# Load environment variables from the .env file
+# Load environment variables from the .env file for local development
 load_dotenv()
 
 # --- Helper Functions for Data Extraction ---
@@ -88,9 +87,8 @@ def get_vector_store(text_chunks):
         st.warning("No text to process. Please provide data.")
         return None
     try:
-        # *** CHANGE: Instantiate the new, stable HuggingFaceEmbeddings class ***
-        # This class correctly handles instructor models without the 'token' error.
-        embeddings = HuggingFaceEmbeddings(model_name="hkunlp/instructor-xl")
+        model_name = "all-MiniLM-L6-v2"
+        embeddings = HuggingFaceEmbeddings(model_name=model_name)
         
         documents = [Document(page_content=chunk) for chunk in text_chunks]
         vector_store = FAISS.from_documents(documents, embedding=embeddings)
@@ -119,7 +117,9 @@ def get_conversational_chain():
 
     Helpful Answer:
     """
-    model = GoogleGenerativeAI(model="gemini-pro", temperature=0.5)
+    # *** CHANGE: Switched to a more stable and current model name to fix the 404 error ***
+    model = GoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.5)
+    
     chain = load_qa_chain(
         llm=model,
         chain_type="stuff",
@@ -132,9 +132,11 @@ def handle_user_input(user_question):
     if "vector_store" not in st.session_state or st.session_state.vector_store is None:
         st.warning("The knowledge base isn't processed yet. Please click 'Process' first.")
         return
+        
     # In Streamlit Cloud, st.secrets is used instead of os.getenv()
-    api_key = st.secrets.get("GOOGLE_API_KEY")
-    if not api_key:
+    try:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+    except FileNotFoundError:
         st.error("Google API Key is not configured. Please set it in your app's Secrets.")
         return
         
@@ -172,7 +174,8 @@ def main():
 
         # In Streamlit Cloud, secrets are not exposed to the UI
         # We just check if it exists.
-        if st.secrets.get("GOOGLE_API_KEY"):
+        # A more robust check for secrets
+        if "GOOGLE_API_KEY" in st.secrets:
             st.success("✅ Google API Key found in Secrets.")
         else:
             st.error("❌ Google API Key not found. Go to Settings > Secrets to add it.")
@@ -188,11 +191,10 @@ def main():
         )
         
         if st.button("Process"):
-            api_key = st.secrets.get("GOOGLE_API_KEY")
-            if not api_key:
+            if "GOOGLE_API_KEY" not in st.secrets:
                 st.error("Cannot process without a Google API Key in Secrets.")
             else:
-                genai.configure(api_key=api_key)
+                genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
                 with st.spinner("Processing your data... This is the way."):
                     raw_text = ""
                     for file in uploaded_files:
