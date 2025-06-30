@@ -89,113 +89,146 @@ def get_vector_store(text_chunks):
     try:
         model_name = "all-MiniLM-L6-v2"
         embeddings = HuggingFaceEmbeddings(model_name=model_name)
-        
         documents = [Document(page_content=chunk) for chunk in text_chunks]
         vector_store = FAISS.from_documents(documents, embedding=embeddings)
         return vector_store
     except Exception as e:
         st.error(f"Error creating vector store: {e}")
-        st.error("This can happen if you have installation issues or package conflicts. Ensure your requirements.txt is up to date.")
         return None
 
 def get_conversational_chain():
-    """Creates and configures the QA chain with Gemini."""
-    prompt_template = """
-    You are "Rishabh's AI", a friendly and professional chatbot assistant.
-    Your goal is to answer questions about Rishabh Malik based ONLY on the context provided.
-    Rishabh is an Azure Data Engineer with 5 years of experience, specializing in PySpark, Python, and building data solutions on Azure. He's also a creative person who loves anime and riding his TVS Ronin.
+    """Creates and configures the QA chain with a dynamic prompt."""
+    person_name = st.session_state.get("person_name", "the user")
+    
+    # Generic prompt template that uses the extracted name
+    prompt_template_str = f"""
+    You are "{person_name}'s AI", a friendly and professional chatbot assistant.
+    Your goal is to answer questions about {person_name} based ONLY on the context provided.
 
     Answer the question as accurately as possible using the provided text.
-    If the answer is not in the context, politely say "I'm sorry, I don't have that information about Rishabh in my knowledge base."
-    Keep your answers concise and human-like, just as Rishabh would respond. Add a touch of professional humor if possible.
+    If the answer is not in the context, politely say "I'm sorry, I don't have that information about {person_name} in my knowledge base."
+    Keep your answers concise and human-like.
 
     Context:
-    {context}
+    {{context}}
 
     Question:
-    {question}
+    {{question}}
 
     Helpful Answer:
     """
-    # *** CHANGE: Switched to a more stable and current model name to fix the 404 error ***
+    
     model = GoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.5)
     
     chain = load_qa_chain(
         llm=model,
         chain_type="stuff",
-        prompt=st.session_state.prompt_template.from_template(prompt_template)
+        prompt=st.session_state.prompt_template.from_template(prompt_template_str)
     )
     return chain
 
-def handle_user_input(user_question):
-    """Processes user question, queries vector store, and generates a response."""
+# *** NEW: Function to extract the person's name from the text ***
+def get_person_name(text_chunks):
+    """Extracts the subject's name from the document chunks using the LLM."""
+    if not text_chunks:
+        return "ResumAI"
+
+    # Create a small, targeted vector store for name extraction
+    try:
+        temp_vector_store = get_vector_store(text_chunks)
+        if temp_vector_store is None:
+             return "ResumAI" # Default name
+        
+        # Query for the name
+        name_query = "What is the full name of the person these documents are about? Respond with only the name."
+        docs = temp_vector_store.similarity_search(name_query, k=1)
+        
+        # Use a simple LLM call to get the name
+        model = GoogleGenerativeAI(model="gemini-1.5-flash")
+        chain = load_qa_chain(llm=model, chain_type="stuff")
+        response = chain.invoke({"input_documents": docs, "question": name_query})
+        
+        # Clean up the name
+        name = response.get("output_text", "ResumAI").strip()
+        return name
+    except Exception as e:
+        st.warning(f"Could not automatically determine the name. Using default. Error: {e}")
+        return "ResumAI" # Default name
+
+
+def handle_chat_input(user_question):
+    """Handles user input, gets response, and updates chat history."""
     if "vector_store" not in st.session_state or st.session_state.vector_store is None:
         st.warning("The knowledge base isn't processed yet. Please click 'Process' first.")
         return
-        
-    # In Streamlit Cloud, st.secrets is used instead of os.getenv()
-    try:
-        api_key = st.secrets["GOOGLE_API_KEY"]
-    except FileNotFoundError:
-        st.error("Google API Key is not configured. Please set it in your app's Secrets.")
-        return
-        
-    try:
-        genai.configure(api_key=api_key)
-        docs = st.session_state.vector_store.similarity_search(user_question, k=3)
-        chain = get_conversational_chain()
-        response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
-        st.write(response["output_text"])
-    except Exception as e:
-        st.error(f"An error occurred while generating the response: {e}")
-        st.info("This could be due to API key issues or content safety restrictions from the model.")
+
+    # Add user message to chat history
+    st.session_state.messages.append({"role": "user", "content": user_question})
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                docs = st.session_state.vector_store.similarity_search(user_question, k=3)
+                chain = get_conversational_chain()
+                response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
+                response_text = response["output_text"]
+                st.write(response_text)
+                st.session_state.messages.append({"role": "assistant", "content": response_text})
+            except Exception as e:
+                error_message = f"An error occurred: {e}"
+                st.error(error_message)
+                st.session_state.messages.append({"role": "assistant", "content": error_message})
 
 # --- Streamlit UI ---
 
 def main():
-    st.set_page_config(page_title="Rishabh's AI (Cloud Ready)", page_icon="☁️")
+    st.set_page_config(page_title="AI Chatbot", page_icon="🤖")
 
+    # Initialize session state variables
     if "vector_store" not in st.session_state:
         st.session_state.vector_store = None
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "person_name" not in st.session_state:
+        st.session_state.person_name = "Your" # Default
     if "prompt_template" not in st.session_state:
         from langchain.prompts import PromptTemplate
         st.session_state.prompt_template = PromptTemplate
 
-    st.header("Chat with Rishabh's AI ☁️")
-    st.write("Ask me anything about Rishabh's professional background, skills, or projects!")
+    st.header(f"Chat with {st.session_state.person_name}'s AI 🤖")
 
-    user_question = st.text_input("Your question:", key="user_question_input", placeholder="e.g., What's Rishabh's experience with PySpark?")
+    # Display chat messages from history
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    if user_question:
-        handle_user_input(user_question)
-
+    # Sidebar configuration
     with st.sidebar:
         st.subheader("Knowledge Base Configuration")
 
-        # In Streamlit Cloud, secrets are not exposed to the UI
-        # We just check if it exists.
-        # A more robust check for secrets
         if "GOOGLE_API_KEY" in st.secrets:
-            st.success("✅ Google API Key found in Secrets.")
+            st.success("✅ Google API Key found.")
+            genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
         else:
             st.error("❌ Google API Key not found. Go to Settings > Secrets to add it.")
 
-        linkedin_username = st.text_input("LinkedIn Username", placeholder="e.g., your-linkedin-profile")
-        github_username = st.text_input("GitHub Username", placeholder="e.g., your-github-handle")
-
-        st.markdown("For LinkedIn, it's best to 'Save to PDF' from your profile and upload it here.")
+        linkedin_username = st.text_input("LinkedIn Username (Optional)")
+        github_username = st.text_input("GitHub Username (Optional)")
+        
+        st.markdown("Upload documents (PDF, DOCX, TXT) to build the knowledge base.")
         uploaded_files = st.file_uploader(
-            "Upload your Resume and other info (PDF, DOCX, TXT)",
+            "Upload your Resume and other info",
             type=['pdf', 'docx', 'txt'],
             accept_multiple_files=True
         )
         
-        if st.button("Process"):
+        if st.button("Process Documents"):
             if "GOOGLE_API_KEY" not in st.secrets:
                 st.error("Cannot process without a Google API Key in Secrets.")
+            elif not uploaded_files:
+                st.warning("Please upload at least one document.")
             else:
-                genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-                with st.spinner("Processing your data... This is the way."):
+                with st.spinner("Processing documents... This might take a moment."):
                     raw_text = ""
                     for file in uploaded_files:
                         if file.name.endswith(".pdf"):
@@ -209,20 +242,24 @@ def main():
                     github_url = f"https://github.com/{github_username}" if github_username else ""
 
                     if linkedin_url:
-                        st.info(f"Attempting to scrape LinkedIn...")
                         raw_text += get_text_from_url(linkedin_url)
                     if github_url:
-                        st.info(f"Attempting to scrape GitHub...")
                         raw_text += get_text_from_url(github_url)
 
                     text_chunks = get_text_chunks(raw_text)
-                    st.write(f"Created {len(text_chunks)} text chunks.")
+                    st.session_state.vector_store = get_vector_store(text_chunks)
+                    
+                    if st.session_state.vector_store:
+                        # Extract the name and update the session
+                        st.session_state.person_name = get_person_name(text_chunks)
+                        st.session_state.messages = [] # Clear previous chat
+                        st.success(f"Knowledge base ready for {st.session_state.person_name}!")
+                        st.rerun()
 
-                    vector_store = get_vector_store(text_chunks)
+    # Chat input
+    if prompt := st.chat_input("Ask a question about the provided documents..."):
+        handle_chat_input(prompt)
 
-                    if vector_store:
-                        st.session_state.vector_store = vector_store
-                        st.success("Knowledge base is ready! You can now ask questions.")
 
 if __name__ == '__main__':
     main()
